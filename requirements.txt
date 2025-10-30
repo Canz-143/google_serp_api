@@ -1,0 +1,8 @@
+fastapi
+serpapi
+pydantic
+pandas
+uvicorn
+python-dotenv
+google-search-results
+
