@@ -6,6 +6,9 @@ from typing import List, Optional
 import pandas as pd
 import os
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(
     title="Google Shopping Search API",
@@ -14,22 +17,25 @@ app = FastAPI(
 )
 
 # Your API Key (In production, use environment variables!)
-API_KEY = "16ae40f2bd537b72ec45f8a517652d4d7b385951a089c9c7c8f525f7dd63ebd3"
+API_KEY = os.getenv("API_KEY")
 
 # Pydantic models for request/response
 class Product(BaseModel):
     product_name: str
-    product_price: str
-    product_url: str
-    thumbnail: str
-    source: str
+    price_combined: str
+    website_url: str
+    img: str
+    website_name: str
     rating: Optional[str] = "N/A"
     reviews: Optional[str] = "N/A"
+
+class Data(BaseModel):
+    ecommerce_links: List[Product]
 
 class SearchResponse(BaseModel):
     query: str
     total_results: int
-    products: List[Product]
+    data: Data
     timestamp: str
 
 def search_google_shopping(search_query: str, location: str = "Philippines", num_results: int = 20) -> List[dict]:
@@ -68,7 +74,7 @@ def search_google_shopping(search_query: str, location: str = "Philippines", num
         products = []
         for product in shopping_results:
             # Try multiple URL fields
-            product_url = (
+            website_url = (
                 product.get("product_link") or 
                 product.get("link") or 
                 product.get("product_url") or
@@ -76,7 +82,7 @@ def search_google_shopping(search_query: str, location: str = "Philippines", num
             )
             
             # Get thumbnail image
-            thumbnail = product.get("thumbnail", "N/A")
+            img = product.get("thumbnail", "N/A")
             
             # Convert rating and reviews to strings
             rating = product.get("rating", "N/A")
@@ -84,10 +90,10 @@ def search_google_shopping(search_query: str, location: str = "Philippines", num
             
             products.append({
                 "product_name": product.get("title", "N/A"),
-                "product_price": product.get("price", "N/A"),
-                "product_url": product_url,
-                "thumbnail": thumbnail,
-                "source": product.get("source", "N/A"),
+                "price_combined": product.get("price", "N/A"),
+                "website_url": website_url,
+                "img": img,
+                "website_name": product.get("source", "N/A"),
                 "rating": str(rating) if rating != "N/A" else "N/A",
                 "reviews": str(reviews) if reviews != "N/A" else "N/A"
             })
@@ -169,7 +175,7 @@ async def search_products(
     return SearchResponse(
         query=q,
         total_results=len(products),
-        products=products,
+        data=Data(ecommerce_links=products),
         timestamp=datetime.now().isoformat()
     )
 
@@ -207,8 +213,8 @@ async def search_products_html(
             .product-card:hover {{ transform: translateY(-5px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }}
             .product-card img {{ width: 200px; height: 200px; object-fit: contain; }}
             .product-name {{ font-size: 13px; margin: 10px 0 5px 0; height: 40px; overflow: hidden; }}
-            .product-price {{ font-size: 16px; color: #e74c3c; margin: 5px 0; font-weight: bold; }}
-            .product-source {{ font-size: 11px; color: #666; margin: 5px 0; }}
+            .price-combined {{ font-size: 16px; color: #e74c3c; margin: 5px 0; font-weight: bold; }}
+            .website-name {{ font-size: 11px; color: #666; margin: 5px 0; }}
             .product-rating {{ font-size: 11px; color: #f39c12; margin: 5px 0; }}
             .product-link {{ 
                 display: inline-block;
@@ -232,18 +238,18 @@ async def search_products_html(
     """
     
     for i, product in enumerate(products, 1):
-        if product['thumbnail'] != "N/A":
+        if product['img'] != "N/A":
             rating_text = f"⭐ {product['rating']}" if product['rating'] != "N/A" else ""
             reviews_text = f"({product['reviews']} reviews)" if product['reviews'] != "N/A" else ""
             
             html += f"""
             <div class="product-card">
-                <img src="{product['thumbnail']}" alt="{product['product_name']}">
+                <img src="{product['img']}" alt="{product['product_name']}">
                 <div class="product-name"><strong>{i}. {product['product_name'][:60]}...</strong></div>
-                <div class="product-price">{product['product_price']}</div>
-                <div class="product-source">{product['source']}</div>
+                <div class="price-combined">{product['price_combined']}</div>
+                <div class="website-name">{product['website_name']}</div>
                 <div class="product-rating">{rating_text} {reviews_text}</div>
-                <a href="{product['product_url']}" target="_blank" class="product-link">View Product →</a>
+                <a href="{product['website_url']}" target="_blank" class="product-link">View Product →</a>
             </div>
             """
     
