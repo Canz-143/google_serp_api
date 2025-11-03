@@ -24,8 +24,7 @@ API_KEY = os.getenv("API_KEY")
 # Pydantic models for request/response
 class Product(BaseModel):
     product_name: str
-    price_combined: str
-    price_php: Optional[str] = "N/A"  # New field for PHP converted price
+    price_combined: str  # Now contains PHP converted price
     currency_code: Optional[str] = "N/A"
     website_url: str
     img: str
@@ -190,13 +189,13 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
                         elif "USD" in price_str:
                             currency_code = "USD"
                     
-                    # Convert to PHP
-                    price_php = convert_price_to_php(product.get("price", "N/A"), currency_code, exchange_rate)
+                    # Get original price and convert to PHP
+                    original_price = product.get("price", "N/A")
+                    price_combined = convert_price_to_php(original_price, currency_code, exchange_rate)
                     
                     all_products.append({
                         "product_name": product.get("title", "N/A"),
-                        "price_combined": product.get("price", "N/A"),
-                        "price_php": price_php,
+                        "price_combined": price_combined,  # Now contains PHP price
                         "currency_code": currency_code,
                         "website_url": website_url,
                         "img": img,
@@ -352,7 +351,6 @@ async def search_products_html(
             .product-card img {{ width: 200px; height: 200px; object-fit: contain; }}
             .product-name {{ font-size: 13px; margin: 10px 0 5px 0; height: 40px; overflow: hidden; }}
             .price-combined {{ font-size: 16px; color: #e74c3c; margin: 5px 0; font-weight: bold; }}
-            .currency-code {{ font-size: 11px; color: #888; margin: 2px 0; }}
             .website-name {{ font-size: 11px; color: #666; margin: 5px 0; }}
             .product-rating {{ font-size: 11px; color: #f39c12; margin: 5px 0; }}
             .product-link {{ 
@@ -377,6 +375,7 @@ async def search_products_html(
                 <span class="region-badge badge-au">🇦🇺 Australia: {au_count}</span>
             </p>
             <p style="font-size: 12px; color: #888;">Exchange Rate: 1 AUD = {exchange_rate:.2f} PHP</p>
+            <p style="font-size: 12px; color: #888; font-style: italic;">All prices shown in PHP (₱)</p>
         </div>
         <div class="grid">
     """
@@ -396,7 +395,6 @@ async def search_products_html(
                 <img src="{product['img']}" alt="{product['product_name']}" onerror="this.src='https://via.placeholder.com/200x200?text=No+Image'">
                 <div class="product-name"><strong>{i}. {product['product_name'][:60]}...</strong></div>
                 <div class="price-combined">{product['price_combined']}</div>
-                <div class="currency-code">≈ {product['price_php']}</div>
                 <div class="website-name">{product['website_name']}</div>
                 <div class="product-rating">{rating_text} {reviews_text}</div>
                 <a href="{product['website_url']}" target="_blank" class="product-link">View Product →</a>
