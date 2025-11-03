@@ -23,6 +23,7 @@ API_KEY = os.getenv("API_KEY")
 class Product(BaseModel):
     product_name: str
     price_combined: str
+    currency_code: Optional[str] = "N/A"
     website_url: str
     img: str
     website_name: str
@@ -58,8 +59,8 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
     
     # Define regions with their country codes
     regions = [
-        {"location": "Philippines", "gl": "ph"},
-        {"location": "Australia", "gl": "au"}
+        {"location": "Philippines", "gl": "ph", "currency": "PHP"},
+        {"location": "Australia", "gl": "au", "currency": "AUD"}
     ]
     
     all_products = []
@@ -91,34 +92,65 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
             
             # Extract relevant information
             for product in shopping_results:
-                # Try multiple URL fields
-                website_url = (
-                    product.get("product_link") or 
-                    product.get("link") or 
-                    product.get("product_url") or
-                    "N/A"
-                )
+                try:
+                    # Try multiple URL fields
+                    website_url = (
+                        product.get("product_link") or 
+                        product.get("link") or 
+                        product.get("product_url") or
+                        "N/A"
+                    )
+                    
+                    # Get thumbnail image
+                    img = product.get("thumbnail", "N/A")
+                    
+                    # Convert rating and reviews to strings
+                    rating = product.get("rating", "N/A")
+                    reviews = product.get("reviews", "N/A")
+                    
+                    # Get currency code - CORRECTED VERSION
+                    currency_code = "N/A"
+                    
+                    # Method 1: Try alternative_price field (contains currency explicitly)
+                    alternative_price = product.get("alternative_price")
+                    if isinstance(alternative_price, dict):
+                        currency_code = alternative_price.get("currency", "N/A")
+                    
+                    # Method 2: If no alternative_price, use region's default currency
+                    if currency_code == "N/A":
+                        currency_code = region["currency"]
+                    
+                    # Method 3: Try to extract from price string as fallback
+                    if currency_code == "N/A" or currency_code == region["currency"]:
+                        price_str = str(product.get("price", ""))
+                        if "₱" in price_str or "PHP" in price_str:
+                            currency_code = "PHP"
+                        elif "AUD" in price_str or (region["gl"] == "au" and "$" in price_str):
+                            currency_code = "AUD"
+                        elif "USD" in price_str:
+                            currency_code = "USD"
+                    
+                    all_products.append({
+                        "product_name": product.get("title", "N/A"),
+                        "price_combined": product.get("price", "N/A"),
+                        "currency_code": currency_code,
+                        "website_url": website_url,
+                        "img": img,
+                        "website_name": product.get("source", "N/A"),
+                        "rating": str(rating) if rating != "N/A" else "N/A",
+                        "reviews": str(reviews) if reviews != "N/A" else "N/A",
+                        "region": region["location"]
+                    })
                 
-                # Get thumbnail image
-                img = product.get("thumbnail", "N/A")
-                
-                # Convert rating and reviews to strings
-                rating = product.get("rating", "N/A")
-                reviews = product.get("reviews", "N/A")
-                
-                all_products.append({
-                    "product_name": product.get("title", "N/A"),
-                    "price_combined": product.get("price", "N/A"),
-                    "website_url": website_url,
-                    "img": img,
-                    "website_name": product.get("source", "N/A"),
-                    "rating": str(rating) if rating != "N/A" else "N/A",
-                    "reviews": str(reviews) if reviews != "N/A" else "N/A",
-                    "region": region["location"]  # Add region identifier
-                })
+                except Exception as product_error:
+                    print(f"Error processing product in {region['location']}: {str(product_error)}")
+                    print(f"Problematic product data: {product}")
+                    continue
         
         except Exception as e:
             print(f"Error for {region['location']}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             continue
     
     return all_products
@@ -255,6 +287,7 @@ async def search_products_html(
             .product-card img {{ width: 200px; height: 200px; object-fit: contain; }}
             .product-name {{ font-size: 13px; margin: 10px 0 5px 0; height: 40px; overflow: hidden; }}
             .price-combined {{ font-size: 16px; color: #e74c3c; margin: 5px 0; font-weight: bold; }}
+            .currency-code {{ font-size: 11px; color: #888; margin: 2px 0; }}
             .website-name {{ font-size: 11px; color: #666; margin: 5px 0; }}
             .product-rating {{ font-size: 11px; color: #f39c12; margin: 5px 0; }}
             .product-link {{ 
@@ -294,9 +327,10 @@ async def search_products_html(
             html += f"""
             <div class="product-card">
                 <span class="region-badge {region_class}">{region_flag} {product['region']}</span>
-                <img src="{product['img']}" alt="{product['product_name']}">
+                <img src="{product['img']}" alt="{product['product_name']}" onerror="this.src='https://via.placeholder.com/200x200?text=No+Image'">
                 <div class="product-name"><strong>{i}. {product['product_name'][:60]}...</strong></div>
                 <div class="price-combined">{product['price_combined']}</div>
+                <div class="currency-code">Currency: {product['currency_code']}</div>
                 <div class="website-name">{product['website_name']}</div>
                 <div class="product-rating">{rating_text} {reviews_text}</div>
                 <a href="{product['website_url']}" target="_blank" class="product-link">View Product →</a>
