@@ -167,27 +167,16 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
                     rating = product.get("rating", "N/A")
                     reviews = product.get("reviews", "N/A")
                     
-                    # Get currency code - CORRECTED VERSION
-                    currency_code = "N/A"
+                    # Get currency code - Default to region's currency
+                    currency_code = region["currency"]  # Default: PHP for Philippines, AUD for Australia
                     
-                    # Method 1: Try alternative_price field (contains currency explicitly)
-                    alternative_price = product.get("alternative_price")
-                    if isinstance(alternative_price, dict):
-                        currency_code = alternative_price.get("currency", "N/A")
-                    
-                    # Method 2: If no alternative_price, use region's default currency
-                    if currency_code == "N/A":
-                        currency_code = region["currency"]
-                    
-                    # Method 3: Try to extract from price string as fallback
-                    if currency_code == "N/A" or currency_code == region["currency"]:
-                        price_str = str(product.get("price", ""))
-                        if "₱" in price_str or "PHP" in price_str:
-                            currency_code = "PHP"
-                        elif "AUD" in price_str or (region["gl"] == "au" and "$" in price_str):
-                            currency_code = "AUD"
-                        elif "USD" in price_str:
-                            currency_code = "USD"
+                    # Override only if we can explicitly detect a different currency from the price string
+                    price_str = str(product.get("price", ""))
+                    if "USD" in price_str or "US$" in price_str:
+                        currency_code = "USD"
+                    elif "EUR" in price_str or "€" in price_str:
+                        currency_code = "EUR"
+                    # Otherwise keep the region's default currency
                     
                     # Get original price and convert to PHP
                     original_price = product.get("price", "N/A")
