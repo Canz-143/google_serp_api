@@ -86,6 +86,9 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
             
             shopping_results = results.get("shopping_results", [])
             
+            # Limit to exactly the number requested per region
+            shopping_results = shopping_results[:results_per_region]
+            
             # Extract relevant information
             for product in shopping_results:
                 # Try multiple URL fields
