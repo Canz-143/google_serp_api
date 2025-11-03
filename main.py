@@ -7,6 +7,8 @@ import pandas as pd
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+import requests
+import re
 
 load_dotenv()
 
@@ -23,6 +25,7 @@ API_KEY = os.getenv("API_KEY")
 class Product(BaseModel):
     product_name: str
     price_combined: str
+    price_php: Optional[str] = "N/A"  # New field for PHP converted price
     currency_code: Optional[str] = "N/A"
     website_url: str
     img: str
@@ -39,10 +42,64 @@ class SearchResponse(BaseModel):
     total_results: int
     ph_results: int  # Number of results from Philippines
     au_results: int  # Number of results from Australia
+    exchange_rate: Optional[float] = None  # AUD to PHP exchange rate
     data: Data
     timestamp: str
 
-def search_google_shopping_dual_region(search_query: str, num_results: int = 40) -> List[dict]:
+def get_exchange_rate() -> float:
+    """
+    Get AUD to PHP exchange rate from exchangerate-api.com (free tier)
+    Falls back to a default rate if API fails
+    """
+    try:
+        # Using exchangerate-api.com free tier (no API key needed)
+        response = requests.get("https://api.exchangerate-api.com/v4/latest/AUD", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            rate = data.get("rates", {}).get("PHP")
+            if rate:
+                print(f"✓ Exchange rate fetched: 1 AUD = {rate} PHP")
+                return rate
+    except Exception as e:
+        print(f"Exchange rate API error: {str(e)}")
+    
+    # Fallback to approximate rate
+    default_rate = 37.5  # Approximate AUD to PHP rate
+    print(f"⚠ Using default exchange rate: 1 AUD = {default_rate} PHP")
+    return default_rate
+
+def extract_numeric_price(price_str: str) -> Optional[float]:
+    """
+    Extract numeric value from price string
+    Examples: "$45.99" -> 45.99, "₱1,234.50" -> 1234.50
+    """
+    if not price_str or price_str == "N/A":
+        return None
+    
+    # Remove currency symbols and commas
+    cleaned = re.sub(r'[^\d.]', '', price_str)
+    
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+def convert_price_to_php(price_str: str, currency_code: str, exchange_rate: float) -> str:
+    """
+    Convert price to PHP if it's in AUD
+    """
+    if currency_code == "PHP":
+        return price_str  # Already in PHP
+    
+    if currency_code == "AUD":
+        numeric_price = extract_numeric_price(price_str)
+        if numeric_price:
+            php_price = numeric_price * exchange_rate
+            return f"₱{php_price:,.2f}"
+    
+    return "N/A"
+
+def search_google_shopping_dual_region(search_query: str, num_results: int = 40) -> tuple[List[dict], float]:
     """
     Search Google Shopping from both Philippines and Australia
     Splits results evenly between the two regions
@@ -52,8 +109,11 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
         num_results: Total number of results (split 50/50 between PH and AU)
     
     Returns:
-        List of dictionaries with product information from both regions
+        Tuple of (list of product dictionaries, exchange_rate)
     """
+    # Get exchange rate first
+    exchange_rate = get_exchange_rate()
+    
     # Split results between two regions
     results_per_region = num_results // 2
     
@@ -130,9 +190,13 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
                         elif "USD" in price_str:
                             currency_code = "USD"
                     
+                    # Convert to PHP
+                    price_php = convert_price_to_php(product.get("price", "N/A"), currency_code, exchange_rate)
+                    
                     all_products.append({
                         "product_name": product.get("title", "N/A"),
                         "price_combined": product.get("price", "N/A"),
+                        "price_php": price_php,
                         "currency_code": currency_code,
                         "website_url": website_url,
                         "img": img,
@@ -153,7 +217,7 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
             traceback.print_exc()
             continue
     
-    return all_products
+    return all_products, exchange_rate
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -223,7 +287,7 @@ async def search_products(
     
     Returns JSON response with product details
     """
-    products = search_google_shopping_dual_region(q, num_results)
+    products, exchange_rate = search_google_shopping_dual_region(q, num_results)
     
     # Count results per region
     ph_count = sum(1 for p in products if p['region'] == 'Philippines')
@@ -234,6 +298,7 @@ async def search_products(
         total_results=len(products),
         ph_results=ph_count,
         au_results=au_count,
+        exchange_rate=exchange_rate,
         data=Data(ecommerce_links=products),
         timestamp=datetime.now().isoformat()
     )
@@ -246,7 +311,7 @@ async def search_products_html(
     """
     Search Google Shopping and return visual HTML grid from both regions
     """
-    products = search_google_shopping_dual_region(q, num_results)
+    products, exchange_rate = search_google_shopping_dual_region(q, num_results)
     
     # Count results per region
     ph_count = sum(1 for p in products if p['region'] == 'Philippines')
@@ -311,6 +376,7 @@ async def search_products_html(
                 <span class="region-badge badge-ph">🇵🇭 Philippines: {ph_count}</span>
                 <span class="region-badge badge-au">🇦🇺 Australia: {au_count}</span>
             </p>
+            <p style="font-size: 12px; color: #888;">Exchange Rate: 1 AUD = {exchange_rate:.2f} PHP</p>
         </div>
         <div class="grid">
     """
@@ -330,7 +396,7 @@ async def search_products_html(
                 <img src="{product['img']}" alt="{product['product_name']}" onerror="this.src='https://via.placeholder.com/200x200?text=No+Image'">
                 <div class="product-name"><strong>{i}. {product['product_name'][:60]}...</strong></div>
                 <div class="price-combined">{product['price_combined']}</div>
-                <div class="currency-code">Currency: {product['currency_code']}</div>
+                <div class="currency-code">≈ {product['price_php']}</div>
                 <div class="website-name">{product['website_name']}</div>
                 <div class="product-rating">{rating_text} {reviews_text}</div>
                 <a href="{product['website_url']}" target="_blank" class="product-link">View Product →</a>
@@ -353,7 +419,7 @@ async def search_products_csv(
     """
     Search Google Shopping and download results as CSV from both regions
     """
-    products = search_google_shopping_dual_region(q, num_results)
+    products, exchange_rate = search_google_shopping_dual_region(q, num_results)
     
     # Create DataFrame
     df = pd.DataFrame(products)
