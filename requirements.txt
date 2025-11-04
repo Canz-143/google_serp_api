@@ -5,4 +5,5 @@ pandas
 uvicorn
 python-dotenv
 google-search-results
-
+fuzzywuzzy 
+python-Levenshtein
