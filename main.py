@@ -9,29 +9,30 @@ from datetime import datetime
 from dotenv import load_dotenv
 import requests
 import re
+from fuzzywuzzy import fuzz  # NEW: Fuzzy string matching library
 
 load_dotenv()
 
 app = FastAPI(
-    title="Google Shopping Search API - Dual Region (PH & AU)",
-    description="Search Google Shopping from Philippines and Australia simultaneously",
-    version="2.0.0"
+    title="Google Shopping Search API - Dual Region (PH & AU) with Fuzzy Matching",
+    description="Search Google Shopping from Philippines and Australia with similarity filtering",
+    version="3.0.0"
 )
 
-# Your API Key (In production, use environment variables!)
 API_KEY = os.getenv("API_KEY")
 
 # Pydantic models for request/response
 class Product(BaseModel):
     product_name: str
-    price_combined: str  # Now contains PHP converted price
+    price_combined: str
     currency_code: Optional[str] = "N/A"
     website_url: str
     img: str
     website_name: str
     rating: Optional[str] = "N/A"
     reviews: Optional[str] = "N/A"
-    region: str  # New field to identify which region the product is from
+    region: str
+    similarity_score: Optional[int] = None  # NEW: Similarity percentage
 
 class Data(BaseModel):
     ecommerce_links: List[Product]
@@ -39,19 +40,62 @@ class Data(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     total_results: int
-    ph_results: int  # Number of results from Philippines
-    au_results: int  # Number of results from Australia
-    exchange_rate: Optional[float] = None  # AUD to PHP exchange rate
+    ph_results: int
+    au_results: int
+    filtered_results: int  # NEW: Number after similarity filter
+    exchange_rate: Optional[float] = None
+    similarity_threshold: Optional[int] = None  # NEW: Threshold used
     data: Data
     timestamp: str
 
+def calculate_similarity(query: str, product_name: str) -> int:
+    """
+    Calculate similarity between query and product name using multiple methods.
+    Returns a score from 0-100.
+    
+    Uses token_sort_ratio which is best for product matching because:
+    - Ignores word order ("iPhone 15 Pro" vs "Pro iPhone 15")
+    - Handles partial matches well
+    - Case insensitive
+    """
+    query_clean = query.lower().strip()
+    product_clean = product_name.lower().strip()
+    
+    # Use token_sort_ratio for best product name matching
+    score = fuzz.token_sort_ratio(query_clean, product_clean)
+    
+    return score
+
+def filter_by_similarity(products: List[dict], query: str, threshold: int = 70) -> List[dict]:
+    """
+    Filter products based on similarity to query.
+    Adds similarity_score to each product.
+    
+    Args:
+        products: List of product dictionaries
+        query: Original search query
+        threshold: Minimum similarity percentage (0-100)
+    
+    Returns:
+        Filtered list of products with similarity scores
+    """
+    filtered = []
+    
+    for product in products:
+        similarity = calculate_similarity(query, product['product_name'])
+        product['similarity_score'] = similarity
+        
+        if similarity >= threshold:
+            filtered.append(product)
+    
+    # Sort by similarity score (highest first)
+    filtered.sort(key=lambda x: x['similarity_score'], reverse=True)
+    
+    return filtered
+
 def get_exchange_rate() -> float:
-    """
-    Get AUD to PHP exchange rate from exchangerate-api.com (free tier)
-    Falls back to a default rate if API fails
-    """
+    """Get AUD to PHP exchange rate"""
     try:
-        # Using exchangerate-api.com free tier (no API key needed)
         response = requests.get("https://api.exchangerate-api.com/v4/latest/AUD", timeout=5)
         if response.status_code == 200:
             data = response.json()
@@ -62,20 +106,15 @@ def get_exchange_rate() -> float:
     except Exception as e:
         print(f"Exchange rate API error: {str(e)}")
     
-    # Fallback to approximate rate
-    default_rate = 37.5  # Approximate AUD to PHP rate
+    default_rate = 37.5
     print(f"⚠ Using default exchange rate: 1 AUD = {default_rate} PHP")
     return default_rate
 
 def extract_numeric_price(price_str: str) -> Optional[float]:
-    """
-    Extract numeric value from price string
-    Examples: "$45.99" -> 45.99, "₱1,234.50" -> 1234.50
-    """
+    """Extract numeric value from price string"""
     if not price_str or price_str == "N/A":
         return None
     
-    # Remove currency symbols and commas
     cleaned = re.sub(r'[^\d.]', '', price_str)
     
     try:
@@ -84,11 +123,9 @@ def extract_numeric_price(price_str: str) -> Optional[float]:
         return None
 
 def convert_price_to_php(price_str: str, currency_code: str, exchange_rate: float) -> str:
-    """
-    Convert price to PHP if it's in AUD
-    """
+    """Convert price to PHP if it's in AUD"""
     if currency_code == "PHP":
-        return price_str  # Already in PHP
+        return price_str
     
     if currency_code == "AUD":
         numeric_price = extract_numeric_price(price_str)
@@ -101,22 +138,10 @@ def convert_price_to_php(price_str: str, currency_code: str, exchange_rate: floa
 def search_google_shopping_dual_region(search_query: str, num_results: int = 40) -> tuple[List[dict], float]:
     """
     Search Google Shopping from both Philippines and Australia
-    Splits results evenly between the two regions
-    
-    Args:
-        search_query: The search term
-        num_results: Total number of results (split 50/50 between PH and AU)
-    
-    Returns:
-        Tuple of (list of product dictionaries, exchange_rate)
     """
-    # Get exchange rate first
     exchange_rate = get_exchange_rate()
-    
-    # Split results between two regions
     results_per_region = num_results // 2
     
-    # Define regions with their country codes
     regions = [
         {"location": "Philippines", "gl": "ph", "currency": "PHP"},
         {"location": "Australia", "gl": "au", "currency": "AUD"}
@@ -139,20 +164,15 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
             search = GoogleSearch(params)
             results = search.get_dict()
             
-            # Check for errors
             if "error" in results:
                 print(f"API Error for {region['location']}: {results['error']}")
                 continue
             
             shopping_results = results.get("shopping_results", [])
-            
-            # Limit to exactly the number requested per region
             shopping_results = shopping_results[:results_per_region]
             
-            # Extract relevant information
             for product in shopping_results:
                 try:
-                    # Try multiple URL fields
                     website_url = (
                         product.get("product_link") or 
                         product.get("link") or 
@@ -160,31 +180,23 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
                         "N/A"
                     )
                     
-                    # Get thumbnail image
                     img = product.get("thumbnail", "N/A")
-                    
-                    # Convert rating and reviews to strings
                     rating = product.get("rating", "N/A")
                     reviews = product.get("reviews", "N/A")
+                    currency_code = region["currency"]
                     
-                    # Get currency code - Default to region's currency
-                    currency_code = region["currency"]  # Default: PHP for Philippines, AUD for Australia
-                    
-                    # Override only if we can explicitly detect a different currency from the price string
                     price_str = str(product.get("price", ""))
                     if "USD" in price_str or "US$" in price_str:
                         currency_code = "USD"
                     elif "EUR" in price_str or "€" in price_str:
                         currency_code = "EUR"
-                    # Otherwise keep the region's default currency
                     
-                    # Get original price and convert to PHP
                     original_price = product.get("price", "N/A")
                     price_combined = convert_price_to_php(original_price, currency_code, exchange_rate)
                     
                     all_products.append({
                         "product_name": product.get("title", "N/A"),
-                        "price_combined": price_combined,  # Now contains PHP price
+                        "price_combined": price_combined,
                         "currency_code": currency_code,
                         "website_url": website_url,
                         "img": img,
@@ -196,13 +208,10 @@ def search_google_shopping_dual_region(search_query: str, num_results: int = 40)
                 
                 except Exception as product_error:
                     print(f"Error processing product in {region['location']}: {str(product_error)}")
-                    print(f"Problematic product data: {product}")
                     continue
         
         except Exception as e:
             print(f"Error for {region['location']}: {str(e)}")
-            import traceback
-            traceback.print_exc()
             continue
     
     return all_products, exchange_rate
@@ -214,7 +223,7 @@ async def root():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Google Shopping Search API - Dual Region</title>
+        <title>Google Shopping Search API - Dual Region with Fuzzy Matching</title>
         <style>
             body { font-family: Arial, sans-serif; max-width: 900px; margin: 50px auto; padding: 20px; }
             h1 { color: #e74c3c; }
@@ -222,43 +231,52 @@ async def root():
             code { background: #333; color: #fff; padding: 2px 6px; border-radius: 3px; }
             a { color: #3498db; text-decoration: none; }
             .badge { background: #27ae60; color: white; padding: 3px 8px; border-radius: 3px; font-size: 12px; }
+            .new { background: #e74c3c; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
         </style>
     </head>
     <body>
-        <h1>🛍️ Google Shopping Search API <span class="badge">PH + AU</span></h1>
-        <p>Search Google Shopping from <strong>Philippines</strong> and <strong>Australia</strong> simultaneously!</p>
-        <p>Results are automatically split 50/50 between both regions.</p>
+        <h1>🛍️ Google Shopping Search API <span class="badge">PH + AU</span> <span class="new">+ Fuzzy Match</span></h1>
+        <p>Search Google Shopping from <strong>Philippines</strong> and <strong>Australia</strong> with intelligent similarity filtering!</p>
         
         <h2>Available Endpoints:</h2>
         
         <div class="endpoint">
             <h3>GET /search</h3>
-            <p>Search for products and get JSON response from both regions</p>
+            <p>Search for products with optional similarity filtering</p>
             <p><strong>Parameters:</strong></p>
             <ul>
                 <li><code>q</code> - Search query (required)</li>
-                <li><code>num_results</code> - Total number of results (default: 40, split 20 PH + 20 AU)</li>
+                <li><code>num_results</code> - Total number of results (default: 40)</li>
+                <li><code>similarity_threshold</code> - Minimum similarity % (default: 0, disabled) <span class="new">NEW</span></li>
             </ul>
-            <p><strong>Example:</strong> <a href="/search?q=KitchenAid toaster&num_results=40">/search?q=KitchenAid toaster&num_results=40</a></p>
+            <p><strong>Examples:</strong></p>
+            <p><a href="/search?q=iPhone 15 Pro&num_results=40&similarity_threshold=70">/search?q=iPhone 15 Pro&similarity_threshold=70</a></p>
+            <p><a href="/search?q=MacBook Air&num_results=20&similarity_threshold=80">/search?q=MacBook Air&similarity_threshold=80</a></p>
         </div>
         
         <div class="endpoint">
             <h3>GET /search/html</h3>
-            <p>Search for products and get visual HTML grid from both regions</p>
-            <p><strong>Parameters:</strong> Same as /search</p>
-            <p><strong>Example:</strong> <a href="/search/html?q=KitchenAid toaster&num_results=40">/search/html?q=KitchenAid toaster&num_results=40</a></p>
+            <p>Visual HTML grid with similarity scores</p>
+            <p><strong>Example:</strong> <a href="/search/html?q=Sony headphones&num_results=40&similarity_threshold=75">/search/html?q=Sony headphones&similarity_threshold=75</a></p>
         </div>
         
         <div class="endpoint">
             <h3>GET /search/csv</h3>
-            <p>Search for products and download as CSV file (includes region column)</p>
-            <p><strong>Parameters:</strong> Same as /search</p>
-            <p><strong>Example:</strong> <a href="/search/csv?q=KitchenAid toaster&num_results=40">/search/csv?q=KitchenAid toaster&num_results=40</a></p>
+            <p>Download CSV with similarity scores</p>
+            <p><strong>Example:</strong> <a href="/search/csv?q=gaming laptop&num_results=40&similarity_threshold=70">/search/csv?q=gaming laptop&similarity_threshold=70</a></p>
         </div>
+        
+        <h2>Similarity Filtering:</h2>
+        <ul>
+            <li><strong>0</strong>: No filtering (returns all results)</li>
+            <li><strong>50-60</strong>: Very loose matching</li>
+            <li><strong>70</strong>: Recommended - Good balance (filters irrelevant products)</li>
+            <li><strong>80-90</strong>: Strict matching (very specific results)</li>
+            <li><strong>100</strong>: Exact match only</li>
+        </ul>
         
         <h2>Interactive API Documentation:</h2>
         <p>Visit <a href="/docs">/docs</a> for interactive Swagger UI</p>
-        <p>Visit <a href="/redoc">/redoc</a> for ReDoc documentation</p>
     </body>
     </html>
     """
@@ -267,17 +285,24 @@ async def root():
 @app.get("/search", response_model=SearchResponse)
 async def search_products(
     q: str = Query(..., description="Search query for products"),
-    num_results: int = Query(40, ge=2, le=100, description="Total number of results (split between PH and AU)")
+    num_results: int = Query(40, ge=2, le=100, description="Total number of results"),
+    similarity_threshold: int = Query(50, ge=0, le=100, description="Minimum similarity percentage (0=disabled, default=50)")
 ):
     """
-    Search Google Shopping for products from both Philippines and Australia
-    Results are split 50/50 between the two regions
+    Search Google Shopping with optional similarity filtering
     
-    Returns JSON response with product details
+    Set similarity_threshold to 70+ to filter out irrelevant products
     """
     products, exchange_rate = search_google_shopping_dual_region(q, num_results)
     
-    # Count results per region
+    # Apply similarity filter if threshold > 0
+    if similarity_threshold > 0:
+        products = filter_by_similarity(products, q, similarity_threshold)
+    else:
+        # Add similarity scores even if not filtering
+        for product in products:
+            product['similarity_score'] = calculate_similarity(q, product['product_name'])
+    
     ph_count = sum(1 for p in products if p['region'] == 'Philippines')
     au_count = sum(1 for p in products if p['region'] == 'Australia')
     
@@ -286,7 +311,9 @@ async def search_products(
         total_results=len(products),
         ph_results=ph_count,
         au_results=au_count,
+        filtered_results=len(products),
         exchange_rate=exchange_rate,
+        similarity_threshold=similarity_threshold if similarity_threshold > 0 else None,
         data=Data(ecommerce_links=products),
         timestamp=datetime.now().isoformat()
     )
@@ -294,18 +321,24 @@ async def search_products(
 @app.get("/search/html", response_class=HTMLResponse)
 async def search_products_html(
     q: str = Query(..., description="Search query for products"),
-    num_results: int = Query(40, ge=2, le=100, description="Total number of results (split between PH and AU)")
+    num_results: int = Query(40, ge=2, le=100, description="Total number of results"),
+    similarity_threshold: int = Query(50, ge=0, le=100, description="Minimum similarity percentage")
 ):
-    """
-    Search Google Shopping and return visual HTML grid from both regions
-    """
+    """Search and return visual HTML grid with similarity scores"""
     products, exchange_rate = search_google_shopping_dual_region(q, num_results)
     
-    # Count results per region
+    # Apply similarity filter
+    if similarity_threshold > 0:
+        products = filter_by_similarity(products, q, similarity_threshold)
+    else:
+        for product in products:
+            product['similarity_score'] = calculate_similarity(q, product['product_name'])
+    
     ph_count = sum(1 for p in products if p['region'] == 'Philippines')
     au_count = sum(1 for p in products if p['region'] == 'Australia')
     
-    # Generate HTML grid
+    similarity_info = f" | <strong>Similarity Filter:</strong> ≥{similarity_threshold}%" if similarity_threshold > 0 else ""
+    
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -325,6 +358,17 @@ async def search_products_html(
             }}
             .badge-ph {{ background: #3498db; }}
             .badge-au {{ background: #27ae60; }}
+            .similarity-badge {{
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background: #f39c12;
+                color: white;
+                padding: 3px 8px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }}
             .grid {{ display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }}
             .product-card {{ 
                 border: 1px solid #ddd; 
@@ -358,13 +402,12 @@ async def search_products_html(
     <body>
         <h1>🛍️ Search Results (PH + AU)</h1>
         <div class="info">
-            <p><strong>Query:</strong> {q} | <strong>Total Results:</strong> {len(products)}</p>
+            <p><strong>Query:</strong> {q} | <strong>Results:</strong> {len(products)}{similarity_info}</p>
             <p>
                 <span class="region-badge badge-ph">🇵🇭 Philippines: {ph_count}</span>
                 <span class="region-badge badge-au">🇦🇺 Australia: {au_count}</span>
             </p>
             <p style="font-size: 12px; color: #888;">Exchange Rate: 1 AUD = {exchange_rate:.2f} PHP</p>
-            <p style="font-size: 12px; color: #888; font-style: italic;">All prices shown in PHP (₱)</p>
         </div>
         <div class="grid">
     """
@@ -374,12 +417,14 @@ async def search_products_html(
             rating_text = f"⭐ {product['rating']}" if product['rating'] != "N/A" else ""
             reviews_text = f"({product['reviews']} reviews)" if product['reviews'] != "N/A" else ""
             
-            # Determine region badge
             region_class = "badge-ph" if product['region'] == "Philippines" else "badge-au"
             region_flag = "🇵🇭" if product['region'] == "Philippines" else "🇦🇺"
             
+            similarity_score = product.get('similarity_score', 0)
+            
             html += f"""
             <div class="product-card">
+                <span class="similarity-badge">{similarity_score}%</span>
                 <span class="region-badge {region_class}">{region_flag} {product['region']}</span>
                 <img src="{product['img']}" alt="{product['product_name']}" onerror="this.src='https://via.placeholder.com/200x200?text=No+Image'">
                 <div class="product-name"><strong>{i}. {product['product_name'][:60]}...</strong></div>
@@ -401,22 +446,25 @@ async def search_products_html(
 @app.get("/search/csv")
 async def search_products_csv(
     q: str = Query(..., description="Search query for products"),
-    num_results: int = Query(40, ge=2, le=100, description="Total number of results (split between PH and AU)")
+    num_results: int = Query(40, ge=2, le=100, description="Total number of results"),
+    similarity_threshold: int = Query(0, ge=0, le=100, description="Minimum similarity percentage")
 ):
-    """
-    Search Google Shopping and download results as CSV from both regions
-    """
+    """Search and download results as CSV with similarity scores"""
     products, exchange_rate = search_google_shopping_dual_region(q, num_results)
     
-    # Create DataFrame
+    if similarity_threshold > 0:
+        products = filter_by_similarity(products, q, similarity_threshold)
+    else:
+        for product in products:
+            product['similarity_score'] = calculate_similarity(q, product['product_name'])
+    
     df = pd.DataFrame(products)
     
-    # Reorder columns to put region first
-    columns = ['region'] + [col for col in df.columns if col != 'region']
+    # Reorder columns to show similarity first
+    columns = ['similarity_score', 'region'] + [col for col in df.columns if col not in ['similarity_score', 'region']]
     df = df[columns]
     
-    # Save to CSV
-    filename = f"google_shopping_{q.replace(' ', '_')}_PH_AU_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"google_shopping_{q.replace(' ', '_')}_similarity{similarity_threshold}_PH_AU_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     df.to_csv(filename, index=False)
     
     return FileResponse(
@@ -430,8 +478,9 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy", 
-        "service": "Google Shopping Search API - Dual Region (PH + AU)",
-        "regions": ["Philippines", "Australia"]
+        "service": "Google Shopping Search API - Dual Region with Fuzzy Matching",
+        "regions": ["Philippines", "Australia"],
+        "features": ["similarity_filtering", "price_conversion", "multi_format_export"]
     }
 
 if __name__ == "__main__":
