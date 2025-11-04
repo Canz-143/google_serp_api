@@ -286,7 +286,7 @@ async def root():
 async def search_products(
     q: str = Query(..., description="Search query for products"),
     num_results: int = Query(40, ge=2, le=100, description="Total number of results"),
-    similarity_threshold: int = Query(70, ge=0, le=100, description="Minimum similarity percentage (0=disabled, default=50)")
+    similarity_threshold: int = Query(60, ge=0, le=100, description="Minimum similarity percentage (0=disabled, default=50)")
 ):
     """
     Search Google Shopping with optional similarity filtering
