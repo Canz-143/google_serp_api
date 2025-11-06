@@ -17,13 +17,14 @@ import json
 load_dotenv()
 
 app = FastAPI(
-    title="Google Shopping Search API - Triple Region with Caching",
-    description="Search Google Shopping from Philippines, Australia, and United States with parallel processing and intelligent caching",
+    title="Google Shopping Search API - Triple Region with Caching (SearchAPI.io)",
+    description="Search Google Shopping from Philippines, Australia, and United States with parallel processing and intelligent caching using SearchAPI.io",
     version="7.0.0"
 )
 
-API_KEY = os.getenv("API_KEY")
-SERPAPI_BASE_URL = "https://serpapi.com/search"
+# Changed to SearchAPI.io
+API_KEY = os.getenv("SEARCHAPI_KEY")  # Update your .env file with SEARCHAPI_KEY
+SEARCHAPI_BASE_URL = "https://www.searchapi.io/api/v1/search"
 
 # ============================================
 # CACHING SETUP
@@ -223,11 +224,12 @@ def convert_price_to_php(price_str: str, currency_code: str, exchange_rates: dic
     return "N/A"
 
 # ============================================
-# SEARCH FUNCTIONS (WITH CACHING)
+# SEARCH FUNCTIONS (WITH CACHING) - SearchAPI.io
 # ============================================
 
 async def search_single_region(region: dict, search_query: str, results_per_region: int, exchange_rates: dict) -> List[dict]:
-    """Search a single region asynchronously"""
+    """Search a single region asynchronously using SearchAPI.io"""
+    # SearchAPI.io parameters
     params = {
         "engine": "google_shopping",
         "q": search_query,
@@ -235,14 +237,15 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
         "location": region["location"],
         "hl": "en",
         "gl": region["gl"],
-        "num": results_per_region
+        # Note: SearchAPI.io doesn't have a 'num' parameter, it returns default results
+        # We'll handle limiting results after fetching
     }
     
     products = []
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(SERPAPI_BASE_URL, params=params)
+            response = await client.get(SEARCHAPI_BASE_URL, params=params)
             
             if response.status_code != 200:
                 print(f"API Error for {region['location']}: Status {response.status_code}")
@@ -250,29 +253,38 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
             
             results = response.json()
             
+            # Check for errors in SearchAPI.io response
             if "error" in results:
                 print(f"API Error for {region['location']}: {results['error']}")
                 return products
             
+            # SearchAPI.io uses 'shopping_results' key (same as SerpAPI)
             shopping_results = results.get("shopping_results", [])
+            
+            # Limit results to requested amount
             shopping_results = shopping_results[:results_per_region]
             
             print(f"✓ {region['location']}: Retrieved {len(shopping_results)} products")
             
             for product in shopping_results:
                 try:
+                    # SearchAPI.io response structure
+                    # 'link' = Direct link to seller's product page (Amazon, Best Buy, etc.)
+                    # 'product_link' = Google Shopping comparison page
                     website_url = (
-                        product.get("product_link") or 
-                        product.get("link") or 
+                        product.get("link") or  # Direct seller link (preferred)
+                        product.get("product_link") or  # Google Shopping page (fallback)
                         product.get("product_url") or
                         "N/A"
                     )
                     
+                    # SearchAPI.io uses 'thumbnail' for images
                     img = product.get("thumbnail", "N/A")
                     rating = product.get("rating", "N/A")
                     reviews = product.get("reviews", "N/A")
                     currency_code = region["currency"]
                     
+                    # Price detection
                     price_str = str(product.get("price", ""))
                     if "USD" in price_str or "US$" in price_str or "$" in price_str:
                         if region["gl"] == "us":
@@ -281,7 +293,20 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
                         currency_code = "AUD"
                     
                     original_price = product.get("price", "N/A")
-                    price_combined = convert_price_to_php(original_price, currency_code, exchange_rates)
+                    
+                    # Handle extracted_price if available in SearchAPI.io
+                    if product.get("extracted_price"):
+                        # SearchAPI.io provides extracted_price as a number
+                        extracted = product.get("extracted_price")
+                        if currency_code == "PHP":
+                            price_combined = f"₱{extracted:,.2f}"
+                        else:
+                            price_combined = convert_price_to_php(str(extracted), currency_code, exchange_rates)
+                    else:
+                        price_combined = convert_price_to_php(original_price, currency_code, exchange_rates)
+                    
+                    # SearchAPI.io uses 'seller' instead of 'source'
+                    seller = product.get("seller", product.get("source", "N/A"))
                     
                     products.append({
                         "product_name": product.get("title", "N/A"),
@@ -289,7 +314,7 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
                         "currency_code": currency_code,
                         "website_url": website_url,
                         "img": img,
-                        "website_name": product.get("source", "N/A"),
+                        "website_name": seller,
                         "rating": str(rating) if rating != "N/A" else "N/A",
                         "reviews": str(reviews) if reviews != "N/A" else "N/A",
                         "region": region["location"]
@@ -306,7 +331,7 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
 
 async def search_google_shopping_triple_region_parallel(search_query: str, num_results: int = 90) -> tuple[List[dict], dict]:
     """
-    Search Google Shopping from all 3 regions IN PARALLEL
+    Search Google Shopping from all 3 regions IN PARALLEL using SearchAPI.io
     Results are NOT cached here - caching happens at endpoint level
     """
     start_time = datetime.now()
@@ -328,7 +353,7 @@ async def search_google_shopping_triple_region_parallel(search_query: str, num_r
         for region in regions
     ]
     
-    print(f"🚀 Starting parallel search across {len(regions)} regions...")
+    print(f"🚀 Starting parallel search across {len(regions)} regions (SearchAPI.io)...")
     region_results = await asyncio.gather(*tasks)
     
     # Combine all results
@@ -354,7 +379,7 @@ async def root():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Google Shopping Search API - Cached & Parallel</title>
+        <title>Google Shopping Search API - SearchAPI.io Edition</title>
         <style>
             body {{ font-family: Arial, sans-serif; max-width: 900px; margin: 50px auto; padding: 20px; }}
             h1 {{ color: #e74c3c; }}
@@ -366,11 +391,12 @@ async def root():
             .stat {{ display: inline-block; margin: 5px 15px 5px 0; }}
             .hit {{ color: #27ae60; font-weight: bold; }}
             .miss {{ color: #e74c3c; font-weight: bold; }}
+            .provider {{ background: #3498db; color: white; padding: 3px 8px; border-radius: 3px; font-size: 12px; }}
         </style>
     </head>
     <body>
-        <h1>🛍️ Google Shopping API <span class="badge">CACHED + PARALLEL</span></h1>
-        <p>Search Google Shopping with <strong>intelligent caching</strong> and <strong>parallel processing</strong>!</p>
+        <h1>🛍️ Google Shopping API <span class="badge">CACHED + PARALLEL</span> <span class="provider">SearchAPI.io</span></h1>
+        <p>Search Google Shopping with <strong>intelligent caching</strong> and <strong>parallel processing</strong> powered by SearchAPI.io!</p>
         
         <div class="cache-stats">
             <h3>📊 Live Cache Statistics</h3>
@@ -390,6 +416,7 @@ async def root():
             <li><strong>Parallel Searches:</strong> All 3 regions simultaneously</li>
             <li><strong>Smart Cache Keys:</strong> Based on query + filters</li>
             <li><strong>Speed:</strong> 2-3s (first search) → 0.01s (cached)</li>
+            <li><strong>Powered by:</strong> SearchAPI.io</li>
         </ul>
         
         <h2>🌏 Coverage:</h2>
@@ -549,7 +576,8 @@ async def cache_statistics():
             "cache_hit_speed": "~0.01 seconds",
             "cache_miss_speed": "~2-3 seconds",
             "speed_improvement": "~200-300x faster"
-        }
+        },
+        "provider": "SearchAPI.io"
     }
 
 @app.post("/cache/clear")
@@ -581,8 +609,9 @@ async def health_check():
     
     return {
         "status": "healthy", 
-        "service": "Google Shopping Search API - Cached & Parallel Edition",
+        "service": "Google Shopping Search API - SearchAPI.io Edition",
         "version": "7.0.0",
+        "provider": "SearchAPI.io",
         "regions": ["Philippines", "Australia", "United States"],
         "features": [
             "parallel_region_searches",
