@@ -17,9 +17,9 @@ import json
 load_dotenv()
 
 app = FastAPI(
-    title="Google Shopping Search API - Quad Region with Caching",
-    description="Search Google Shopping from Philippines, Australia, United States, and Europe with parallel processing and intelligent caching",
-    version="6.0.0"
+    title="Google Shopping Search API - Triple Region with Caching",
+    description="Search Google Shopping from Philippines, Australia, and United States with parallel processing and intelligent caching",
+    version="7.0.0"
 )
 
 API_KEY = os.getenv("API_KEY")
@@ -100,14 +100,13 @@ class SearchResponse(BaseModel):
     ph_results: int
     au_results: int
     us_results: int
-    eu_results: int
     filtered_results: int
     exchange_rates: dict
     similarity_threshold: Optional[int] = None
     data: Data
     timestamp: str
     processing_time_seconds: float
-    cache_hit: bool  # NEW: Indicates if result came from cache
+    cache_hit: bool
 
 # ============================================
 # SIMILARITY FUNCTIONS
@@ -156,8 +155,7 @@ async def get_exchange_rates_async() -> dict:
     rates = {}
     default_rates = {
         "AUD": 37.5,
-        "USD": 56.5,
-        "EUR": 61.0
+        "USD": 56.5
     }
     
     async def fetch_rate(currency: str, url: str):
@@ -175,11 +173,10 @@ async def get_exchange_rates_async() -> dict:
             print(f"{currency} Exchange rate API error: {str(e)}")
         return currency, None
     
-    # Fetch all 3 rates in parallel
+    # Fetch both rates in parallel
     tasks = [
         fetch_rate("AUD", "https://api.exchangerate-api.com/v4/latest/AUD"),
-        fetch_rate("USD", "https://api.exchangerate-api.com/v4/latest/USD"),
-        fetch_rate("EUR", "https://api.exchangerate-api.com/v4/latest/EUR")
+        fetch_rate("USD", "https://api.exchangerate-api.com/v4/latest/USD")
     ]
     
     results = await asyncio.gather(*tasks)
@@ -280,15 +277,11 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
                     if "USD" in price_str or "US$" in price_str or "$" in price_str:
                         if region["gl"] == "us":
                             currency_code = "USD"
-                    elif "EUR" in price_str or "€" in price_str:
-                        currency_code = "EUR"
                     elif "AUD" in price_str or "A$" in price_str:
                         currency_code = "AUD"
                     
                     original_price = product.get("price", "N/A")
                     price_combined = convert_price_to_php(original_price, currency_code, exchange_rates)
-                    
-                    region_display = "Europe (Germany)" if region["location"] == "Germany" else region["location"]
                     
                     products.append({
                         "product_name": product.get("title", "N/A"),
@@ -299,7 +292,7 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
                         "website_name": product.get("source", "N/A"),
                         "rating": str(rating) if rating != "N/A" else "N/A",
                         "reviews": str(reviews) if reviews != "N/A" else "N/A",
-                        "region": region_display
+                        "region": region["location"]
                     })
                 
                 except Exception as product_error:
@@ -311,9 +304,9 @@ async def search_single_region(region: dict, search_query: str, results_per_regi
     
     return products
 
-async def search_google_shopping_quad_region_parallel(search_query: str, num_results: int = 80) -> tuple[List[dict], dict]:
+async def search_google_shopping_triple_region_parallel(search_query: str, num_results: int = 90) -> tuple[List[dict], dict]:
     """
-    Search Google Shopping from all 4 regions IN PARALLEL
+    Search Google Shopping from all 3 regions IN PARALLEL
     Results are NOT cached here - caching happens at endpoint level
     """
     start_time = datetime.now()
@@ -321,16 +314,15 @@ async def search_google_shopping_quad_region_parallel(search_query: str, num_res
     # Fetch exchange rates (cached automatically)
     exchange_rates = await get_exchange_rates_async()
     
-    results_per_region = num_results // 4
+    results_per_region = num_results // 3
     
     regions = [
         {"location": "Philippines", "gl": "ph", "currency": "PHP"},
         {"location": "Australia", "gl": "au", "currency": "AUD"},
-        {"location": "United States", "gl": "us", "currency": "USD"},
-        {"location": "Germany", "gl": "de", "currency": "EUR"}
+        {"location": "United States", "gl": "us", "currency": "USD"}
     ]
     
-    # Create tasks for all 4 regions
+    # Create tasks for all 3 regions
     tasks = [
         search_single_region(region, search_query, results_per_region, exchange_rates)
         for region in regions
@@ -395,9 +387,16 @@ async def root():
         <ul>
             <li><strong>Search Result Caching:</strong> 15-minute TTL (instant repeat queries)</li>
             <li><strong>Exchange Rate Caching:</strong> 1-hour TTL (rates don't change often)</li>
-            <li><strong>Parallel Searches:</strong> All 4 regions simultaneously</li>
+            <li><strong>Parallel Searches:</strong> All 3 regions simultaneously</li>
             <li><strong>Smart Cache Keys:</strong> Based on query + filters</li>
             <li><strong>Speed:</strong> 2-3s (first search) → 0.01s (cached)</li>
+        </ul>
+        
+        <h2>🌏 Coverage:</h2>
+        <ul>
+            <li>🇵🇭 <strong>Philippines</strong></li>
+            <li>🇦🇺 <strong>Australia</strong></li>
+            <li>🇺🇸 <strong>United States</strong></li>
         </ul>
         
         <h2>Available Endpoints:</h2>
@@ -451,7 +450,7 @@ async def root():
 @app.get("/search", response_model=SearchResponse)
 async def search_products(
     q: str = Query(..., description="Search query for products"),
-    num_results: int = Query(80, ge=4, le=200, description="Total number of results"),
+    num_results: int = Query(90, ge=3, le=300, description="Total number of results"),
     similarity_threshold: int = Query(70, ge=0, le=100, description="Minimum similarity percentage")
 ):
     """
@@ -482,7 +481,7 @@ async def search_products(
     cache_stats["search_misses"] += 1
     print(f"⚠ Cache MISS for query '{q}' (key: {cache_key[:8]}...) - performing search...")
     
-    products, exchange_rates = await search_google_shopping_quad_region_parallel(q, num_results)
+    products, exchange_rates = await search_google_shopping_triple_region_parallel(q, num_results)
     
     # Apply similarity filter
     if similarity_threshold > 0:
@@ -494,7 +493,6 @@ async def search_products(
     ph_count = sum(1 for p in products if p['region'] == 'Philippines')
     au_count = sum(1 for p in products if p['region'] == 'Australia')
     us_count = sum(1 for p in products if p['region'] == 'United States')
-    eu_count = sum(1 for p in products if 'Europe' in p['region'])
     
     processing_time = (datetime.now() - start_time).total_seconds()
     
@@ -505,7 +503,6 @@ async def search_products(
         "ph_results": ph_count,
         "au_results": au_count,
         "us_results": us_count,
-        "eu_results": eu_count,
         "filtered_results": len(products),
         "exchange_rates": exchange_rates,
         "similarity_threshold": similarity_threshold if similarity_threshold > 0 else None,
@@ -520,190 +517,6 @@ async def search_products(
     print(f"✓ Results cached with key: {cache_key[:8]}... (TTL: 15 min)")
     
     return SearchResponse(**response_data)
-
-@app.get("/search/html", response_class=HTMLResponse)
-async def search_products_html(
-    q: str = Query(..., description="Search query for products"),
-    num_results: int = Query(80, ge=4, le=200, description="Total number of results"),
-    similarity_threshold: int = Query(65, ge=0, le=100, description="Minimum similarity percentage")
-):
-    """Search and return visual HTML grid (with caching)"""
-    start_time = datetime.now()
-    
-    # Use the cached search endpoint
-    result = await search_products(q, num_results, similarity_threshold)
-    
-    products = [p.dict() for p in result.data.ecommerce_links]
-    exchange_rates = result.exchange_rates
-    processing_time = result.processing_time_seconds
-    cache_hit = result.cache_hit
-    
-    ph_count = result.ph_results
-    au_count = result.au_results
-    us_count = result.us_results
-    eu_count = result.eu_results
-    
-    cache_badge = "🟢 CACHED" if cache_hit else "🔴 FRESH"
-    similarity_info = f" | <strong>Similarity:</strong> ≥{similarity_threshold}%" if similarity_threshold > 0 else ""
-    rates_display = f"1 USD = {exchange_rates['USD']:.2f} PHP | 1 EUR = {exchange_rates['EUR']:.2f} PHP | 1 AUD = {exchange_rates['AUD']:.2f} PHP"
-    
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Search Results: {q}</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }}
-            h1 {{ color: #333; text-align: center; }}
-            .info {{ text-align: center; color: #666; margin-bottom: 30px; }}
-            .speed-badge {{ 
-                background: #27ae60; 
-                color: white; 
-                padding: 3px 10px; 
-                border-radius: 12px; 
-                font-size: 12px; 
-                font-weight: bold;
-            }}
-            .cache-badge {{
-                background: #3498db;
-                color: white;
-                padding: 3px 10px;
-                border-radius: 12px;
-                font-size: 12px;
-                font-weight: bold;
-            }}
-            .region-badge {{ 
-                display: inline-block;
-                padding: 2px 8px; 
-                border-radius: 3px; 
-                font-size: 10px; 
-                font-weight: bold;
-                color: white;
-            }}
-            .badge-ph {{ background: #3498db; }}
-            .badge-au {{ background: #27ae60; }}
-            .badge-us {{ background: #e74c3c; }}
-            .badge-eu {{ background: #9b59b6; }}
-            .similarity-badge {{
-                position: absolute;
-                top: 10px;
-                right: 10px;
-                background: #f39c12;
-                color: white;
-                padding: 3px 8px;
-                border-radius: 12px;
-                font-size: 11px;
-                font-weight: bold;
-            }}
-            .grid {{ display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }}
-            .product-card {{ 
-                border: 1px solid #ddd; 
-                padding: 15px; 
-                border-radius: 8px; 
-                width: 220px; 
-                background: white;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                transition: transform 0.2s;
-                position: relative;
-            }}
-            .product-card:hover {{ transform: translateY(-5px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }}
-            .product-card img {{ width: 200px; height: 200px; object-fit: contain; }}
-            .product-name {{ font-size: 13px; margin: 10px 0 5px 0; height: 40px; overflow: hidden; }}
-            .price-combined {{ font-size: 16px; color: #e74c3c; margin: 5px 0; font-weight: bold; }}
-            .website-name {{ font-size: 11px; color: #666; margin: 5px 0; }}
-            .product-rating {{ font-size: 11px; color: #f39c12; margin: 5px 0; }}
-            .product-link {{ 
-                display: inline-block;
-                font-size: 12px; 
-                color: #3498db; 
-                text-decoration: none;
-                margin-top: 10px;
-                padding: 5px 10px;
-                border: 1px solid #3498db;
-                border-radius: 4px;
-            }}
-            .product-link:hover {{ background: #3498db; color: white; }}
-        </style>
-    </head>
-    <body>
-        <h1>🛍️ Search Results <span class="speed-badge">⚡ {processing_time:.2f}s</span> <span class="cache-badge">{cache_badge}</span></h1>
-        <div class="info">
-            <p><strong>Query:</strong> {q} | <strong>Results:</strong> {len(products)}{similarity_info}</p>
-            <p>
-                <span class="region-badge badge-ph">🇵🇭 Philippines: {ph_count}</span>
-                <span class="region-badge badge-au">🇦🇺 Australia: {au_count}</span>
-                <span class="region-badge badge-us">🇺🇸 United States: {us_count}</span>
-                <span class="region-badge badge-eu">🇪🇺 Europe: {eu_count}</span>
-            </p>
-            <p style="font-size: 12px; color: #888;">Exchange Rates: {rates_display}</p>
-        </div>
-        <div class="grid">
-    """
-    
-    for i, product in enumerate(products, 1):
-        if product['img'] != "N/A":
-            rating_text = f"⭐ {product['rating']}" if product['rating'] != "N/A" else ""
-            reviews_text = f"({product['reviews']} reviews)" if product['reviews'] != "N/A" else ""
-            
-            if product['region'] == "Philippines":
-                region_class = "badge-ph"
-                region_flag = "🇵🇭"
-            elif product['region'] == "Australia":
-                region_class = "badge-au"
-                region_flag = "🇦🇺"
-            elif product['region'] == "United States":
-                region_class = "badge-us"
-                region_flag = "🇺🇸"
-            else:
-                region_class = "badge-eu"
-                region_flag = "🇪🇺"
-            
-            similarity_score = product.get('similarity_score', 0)
-            
-            html += f"""
-            <div class="product-card">
-                <span class="similarity-badge">{similarity_score}%</span>
-                <span class="region-badge {region_class}">{region_flag} {product['region']}</span>
-                <img src="{product['img']}" alt="{product['product_name']}" onerror="this.src='https://via.placeholder.com/200x200?text=No+Image'">
-                <div class="product-name"><strong>{i}. {product['product_name'][:60]}...</strong></div>
-                <div class="price-combined">{product['price_combined']}</div>
-                <div class="website-name">{product['website_name']}</div>
-                <div class="product-rating">{rating_text} {reviews_text}</div>
-                <a href="{product['website_url']}" target="_blank" class="product-link">View Product →</a>
-            </div>
-            """
-    
-    html += """
-        </div>
-    </body>
-    </html>
-    """
-    
-    return html
-
-@app.get("/search/csv")
-async def search_products_csv(
-    q: str = Query(..., description="Search query for products"),
-    num_results: int = Query(80, ge=4, le=200, description="Total number of results"),
-    similarity_threshold: int = Query(0, ge=0, le=100, description="Minimum similarity percentage")
-):
-    """Search and download as CSV (with caching)"""
-    # Use cached search
-    result = await search_products(q, num_results, similarity_threshold)
-    products = [p.dict() for p in result.data.ecommerce_links]
-    
-    df = pd.DataFrame(products)
-    columns = ['similarity_score', 'region'] + [col for col in df.columns if col not in ['similarity_score', 'region']]
-    df = df[columns]
-    
-    filename = f"google_shopping_{q.replace(' ', '_')}_similarity{similarity_threshold}_4REGIONS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    df.to_csv(filename, index=False)
-    
-    return FileResponse(
-        filename, 
-        media_type='text/csv',
-        filename=filename
-    )
 
 @app.get("/cache/stats")
 async def cache_statistics():
@@ -769,8 +582,8 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "Google Shopping Search API - Cached & Parallel Edition",
-        "version": "6.0.0",
-        "regions": ["Philippines", "Australia", "United States", "Europe (Germany)"],
+        "version": "7.0.0",
+        "regions": ["Philippines", "Australia", "United States"],
         "features": [
             "parallel_region_searches",
             "parallel_exchange_rates",
