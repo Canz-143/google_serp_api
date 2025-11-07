@@ -7,3 +7,6 @@ python-dotenv
 google-search-results
 fuzzywuzzy 
 python-Levenshtein
+httpx
+cachetools
+sentence-transformers
