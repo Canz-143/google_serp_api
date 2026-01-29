@@ -534,8 +534,8 @@ async def root():
 @app.get("/search", response_model=SearchResponse)
 async def search_products(
     q: str = Query(..., description="Search query for products"),
-    num_results: int = Query(90, ge=3, le=300, description="Total number of results"),
-    similarity_threshold: int = Query(70, ge=0, le=100, description="Minimum semantic similarity percentage")
+    num_results: int = Query(60, ge=3, le=300, description="Total number of results"),
+    similarity_threshold: int = Query(50, ge=0, le=100, description="Minimum semantic similarity percentage")
 ):
     """
     Search with AI-powered semantic similarity
